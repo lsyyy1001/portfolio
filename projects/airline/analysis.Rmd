@@ -1,0 +1,463 @@
+```{r}
+library(pROC)
+library(dplyr)
+library(car)
+library(ggplot2)
+library(hexbin)
+
+AirlineData_clean <- readRDS("/Users/siyingliu/Desktop/AirlineData_clean.rds")
+
+#------data visualization-----------#
+
+# 2. Transfer to cleaned CSV to observe the data directly
+write.csv(AirlineData_clean, "/Users/siyingliu/Desktop/AirlineData_clean.csv", row.names = FALSE)
+#-----------------------------------#
+
+#-----------------------------------#
+
+
+
+#---(Rule Of thumb)At first, We want to test which Airlines have the "better" Carrier delay scenario---------------------------------#
+
+Changed1=AirlineData_clean[AirlineData_clean$OnTime=="0"&
+                             !is.na(AirlineData_clean$Carrier_Delay_Time)&
+                             AirlineData_clean$Carrier_Delay_Time!=0 &
+                             (is.na(AirlineData_clean$Weather_Delay_Time) | AirlineData_clean$Weather_Delay_Time==0)&
+                             (is.na(AirlineData_clean$NAS_Delay_Time) | AirlineData_clean$NAS_Delay_Time==0)&
+                             (is.na(AirlineData_clean$Security_Delay_Time) | AirlineData_clean$Security_Delay_Time==0)&
+                             (is.na(AirlineData_clean$Late_Aircraft_Delay_Time) | AirlineData_clean$Late_Aircraft_Delay_Time==0),
+                             ]
+airline_carrier_delay <- Changed1 %>%
+  group_by(Airline) %>% 
+  summarise(
+    n_flights = n(),
+    avg_carrier_delay = mean(Carrier_Delay_Time, na.rm = TRUE),
+    median_carrier_delay = median(Carrier_Delay_Time, na.rm = TRUE),
+    total_carrier_delay = sum(Carrier_Delay_Time, na.rm = TRUE)
+  ) %>%
+  arrange(avg_carrier_delay)   # sort: least delay first
+
+airline_carrier_delay  # !!!We could Choose WN airline for least Carrier delay!!! Under the holiday, F9 has the worst control over the Carrier delay!
+
+#-----------------------------------------------------------------------------------------------#
+```
+
+```{r}
+#---(Rule of Thumb)At Second, We want to test which Airports have the "better" NAS delay scenario---#
+
+Changed2=AirlineData_clean[AirlineData_clean$OnTime=="0"&
+                             !is.na(AirlineData_clean$NAS_Delay_Time)&
+                             AirlineData_clean$NAS_Delay_Time!=0&
+                             (is.na(AirlineData_clean$Weather_Delay_Time) | AirlineData_clean$Weather_Delay_Time==0)&
+                             (is.na(AirlineData_clean$Carrier_Delay_Time) | AirlineData_clean$Carrier_Delay_Time==0)&
+                             (is.na(AirlineData_clean$Security_Delay_Time) | AirlineData_clean$Security_Delay_Time==0)&
+                             (is.na(AirlineData_clean$Late_Aircraft_Delay_Time) | AirlineData_clean$Late_Aircraft_Delay_Time==0),]
+airline_NAS_delay <- Changed2 %>%
+  group_by(Dep_Airport) %>% 
+  summarise(
+    n_flights = n(),
+    avg_NAS_delay = mean(NAS_Delay_Time, na.rm = TRUE),
+    median_NAS_delay = median(NAS_Delay_Time, na.rm = TRUE),
+    total_NAS = sum(NAS_Delay_Time, na.rm = TRUE)
+  ) %>%
+  arrange(avg_NAS_delay)   # sort: least delay first
+midwest_airports <- c("ORD","MDW","MKE","MSP","DTW","CVG","CLE","CMH","DAY",
+                      "IND","STL","MCI","OMA","DSM","MSN")
+airline_NAS_delay_midwest <- airline_NAS_delay %>%
+  filter(Dep_Airport %in% midwest_airports) 
+airline_NAS_delay_midwest
+# It seems like MSN,ORD and MCI(Missouri) is a most appropriate choose for Midwester, and !!! MSN is a king!!!
+#!!! Under the holiday, DSM and CLE has the worst control over the NAS delay!
+#--------------------------------------------------------------------------------------#
+```
+
+```{r}
+
+#---(Rule of Thumb)At Third, what is optimal choice for not having a unfortunate,cancelled flights?---#
+fit_cancel_p=glm(
+  Cancelled ~ Airline+ Month + Time_of_Day + Week+ Route_Cancel_Rate + Dep_Airport,
+  data  = AirlineData_clean,
+  family = binomial()
+)
+summary(fit_cancel_p)
+
+```
+
+```{r}
+# Anova
+anova_result=anova(fit_cancel,fit_cancel_p)
+anova_result
+```
+```{r}
+#auc compute
+p_hat_new <- predict(fit_cancel_p, type = "response")
+new_roc_obj <- roc(response = fit_cancel_p$y,
+                   predictor = p_hat_new)
+auc(new_roc_obj)
+```
+
+```{r}
+## train and test verify
+n <- nrow(AirlineData_clean)
+idx_train <- sample(seq_len(n), size = 0.7 * n)
+train <- air_clean[idx_train, ]
+test  <- air_clean[-idx_train, ]
+```
+
+```{r}
+fit_cancel_cv <- glm(
+  Cancelled ~ Airline+ Month + Time_of_Day + Week+ Route_Cancel_Rate + Dep_Airport,
+  data   = AirlineData_clean,
+  family = binomial()
+)
+
+p_hat_train <- predict(fit_cancel_cv, newdata = train, type = "response")
+train_roc_train   <- roc(response = train$Cancelled, predictor = p_hat_train)
+p_hat_test <- predict(fit_cancel_cv, newdata = test, type = "response")
+roc_test   <- roc(response = test$Cancelled, predictor = p_hat_test)
+
+
+#========== VIF 分析 ==========
+cat("\nVIF analysis results:\n")
+vif_baseline <- vif(fit_cancel)
+print(vif_baseline)
+
+vif_combined <- vif(fit_cancel_p)
+print(vif_combined)
+
+
+#--------------------------------------------------------------------------------------#
+
+```
+
+```{r}
+
+#------(takeaways)Q1: IL or WI States to Florida-------------------------------------------------------------------------------------------------------------------#
+
+#-- If a UW-Madison Student want to Fly to FL,which departure Airport under Which airline and what time is the better choice?-----
+
+    
+    Var_FL <- AirlineData_clean[AirlineData_clean$Arr_State == "FL", ]
+    
+    Var_FL$Arr_Time_CST=as.numeric(Var_FL$Arr_Time_CST)
+    Var_FL$Dep_Time_CST=as.numeric(Var_FL$Dep_Time_CST)
+    Var_FL$flighttimeold<-Var_FL$Arr_Time_CST-Var_FL$Dep_Time_CST
+    Var_FL$flighttimeold
+    for( i in 1:length(Var_FL$flighttimeold)){
+      if (!is.na(Var_FL$flighttimeold[i]) && Var_FL$flighttimeold[i]<0){
+        Var_FL$Arr_Time_CST[i]=Var_FL$Arr_Time_CST[i]+1440
+      }
+      else{
+        Var_FL$Arr_Time_CST[i]=Var_FL$Arr_Time_CST[i]
+      }
+    }
+    Var_FL$flighttime<-Var_FL$Arr_Time_CST-Var_FL$Dep_Time_CST
+    Var_FL$flighttime
+    Var_FL$week_type <- ifelse(Var_FL$Week %in% c("Sat", "Sun"),
+                           "Weekend",
+                           "Weekday")
+    Var_FL$Weather_Delay_Segment <- cut(
+      Var_FL$Weather_Delay_Time,
+      breaks = c(-1, 0, 15, 60, Inf),
+      labels = c("NoDelay", "Minor", "Moderate", "Severe")
+    )
+    
+    #Var_FL$Dep_Airport <- relevel(Var_FL$Dep_Airport, ref = "CHOOSE a basis level we want")
+    
+    model1 <- glm(OnTime ~ Dep_Airport + Airline + Time_of_Day +Dist_Dep_Arr+flighttime+week_type,
+                  data = Var_FL,
+                  family = binomial)
+    summary(model1)
+    
+    
+    
+    pred_prob <- predict(model1, type = "response",newdata=Var_FL)
+    
+    # 2. ComPute AUC
+    roc_obj <- roc(Var_FL$OnTime, pred_prob)
+    auc(roc_obj)
+
+#Conclusion_partial: We we see that flying with Airline UA during Morning is the appropriate choice for flying to Florida with moderate probability of having Carrier delay)
+
+
+# Step 1: representative data
+dist0 <- mean(Var_FL$Dist_Dep_Arr, na.rm = TRUE)
+flight0 <- mean(Var_FL$flighttime, na.rm = TRUE)
+#-----------------#
+newdata1 <- data.frame(
+  Time_of_Day = unique(Var_FL$Time_of_Day),
+  Dep_Airport = "MSN",
+  Airline = "UA",
+  week_type = "Weekend",
+  Dist_Dep_Arr = dist0,
+  flighttime = flight0
+)
+newdata1$pred_prob <- predict(model1, newdata1, type = "response")
+
+newdata1 %>%
+  arrange(desc(pred_prob))
+
+newdata11 <- data.frame(
+  Time_of_Day = unique(Var_FL$Time_of_Day),
+  Dep_Airport = "MSN",
+  Airline = "UA",
+  week_type = "Weekday",
+  Dist_Dep_Arr = dist0,
+  flighttime = flight0
+)
+newdata1$pred_prob <- predict(model1, newdata11, type = "response")
+
+newdata1 %>%
+  arrange(desc(pred_prob)) #SAME, best for dawn time
+
+#Conclusion_complete: We we see that flying with Airline UA at MSN during the dawn time.
+
+#-----------------#
+#!!!!This part is partially suggested by ChatGPT when I got confused from which airport should we choose.(Edit later)
+
+
+
+
+#-----------------------------------------------------------------------------------------------------------------------------------------------#
+
+
+
+#------Q2: -----------#
+
+#-- ?-----
+
+#-----------------------------------------------------------------------------------------------------------------------------------------------#
+
+
+
+#------(takeaway)Q3: Traveling back(Or go back to school from home) from CA to ORD (then take a bus to UW-Madison)-----------#
+Var_CA=AirlineData_clean[AirlineData_clean$Arr_Airport=="ORD"&AirlineData_clean$Dep_State=="CA",]
+
+Var_CA$Arr_Time_CST=as.numeric(Var_CA$Arr_Time_CST)
+Var_CA$Arr_Time_CST
+Var_CA$Dep_Time_CST=as.numeric(Var_CA$Dep_Time_CST)
+Var_CA$Dep_Time_CST
+Var_CA$flighttimeold <- Var_CA$Arr_Time_CST-Var_CA$Dep_Time_CST
+for( i in 1:length(Var_CA$flighttimeold)){
+  if (!is.na(Var_CA$flighttimeold[i]) && Var_CA$flighttimeold[i]<0){
+    Var_CA$Arr_Time_CST[i]=Var_CA$Arr_Time_CST[i]+1440
+  }
+  else{
+    Var_CA$Arr_Time_CST[i]=Var_CA$Arr_Time_CST[i]
+  }
+}
+Var_CA$flighttime<-Var_CA$Arr_Time_CST-Var_CA$Dep_Time_CST
+Var_CA$flighttime
+Var_CA$week_type <- ifelse(Var_CA$Week %in% c("Sat", "Sun"),
+                           "Weekend",
+                           "Weekday")
+#Var_CA$Weather_Indicator <- ifelse(!is.na(Var_CA$Weather_Delay_Time) & Var_CA$Weather_Delay_Time > 0, 1, 0)
+model3 <- glm(OnTime ~ week_type+Dep_Airport + Airline + Time_of_Day+flighttime,
+              data = Var_CA,
+              family = binomial)
+summary(model3)
+pred_prob <- predict(model3, type = "response",newdata=Var_CA)
+
+# 2. ComPute AUC
+roc_obj <- roc(Var_CA$OnTime, pred_prob)
+auc(roc_obj)
+
+#Conclusion_partial: We we see that flying with Airline AS at Dawn time（Aftenoon basis level)is the appropriate choice for flying back to IL with moderate probability of having Carrier delay)
+newdata3 <- data.frame(
+  Time_of_Day ="Dawn",
+  Dep_Airport =unique(Var_CA$Dep_Airport),
+  Airline = "AS" ,
+  flighttime=mean(Var_CA$flighttime,na.rm=TRUE),
+  week_type="Weekend" # We Assume AS to be the optimal choice based on GLM and information about Carrier_delay
+)
+newdata3$pred_prob <- predict(model3, newdata3, type = "response")
+newdata3 %>%
+  arrange(desc(pred_prob))  
+
+
+#Conclusion_Complete: We see that SJC Airport for departure from CA is the optimal choice.
+#-----------------------------------------------------------------------------------------------------------------------------------------------#
+```
+
+```{r}
+fit_cancel <- glm(
+  Cancelled ~ Airline + Dep_Airport + Month + Time_of_Day + Route_Cancel_Rate,
+  data  = air_clean,
+  family = binomial()
+)
+summary(fit_cancel)
+
+```
+
+```{r}
+# Example: get estimated cancellation probabilities for a few scenarios
+newdata_cancel <- expand.grid(
+  Airline      = c("AA", "DL", "UA", "WN"),
+  Dep_Airport  = c("ORD", "ATL", "LAX"),
+  Month        = c("Nov", "Dec"),
+  Time_of_Day  = factor(c("Morning", "Afternoon", "Evening"),
+                        levels = levels(air_clean$Time_of_Day))
+)
+
+newdata_cancel$pred_cancel <- predict(fit_cancel, newdata = newdata_cancel,
+                                      type = "response")
+newdata_cancel
+air_clean$cancel_hat <- fitted(fit_cancel)
+
+hist(air_clean$cancel_hat, breaks = 30,
+     main = "Fitted cancellation probabilities",
+     xlab = "Predicted P(Cancelled = 1)")
+
+```
+
+
+```{r}
+airline_summary <- air_clean |>
+  group_by(Airline) |>
+  summarize(
+    flights      = n(),
+    cancel_rate  = mean(Cancelled, na.rm = TRUE),
+    ontime_rate  = mean(OnTime,    na.rm = TRUE),
+    mean_delay   = mean(Arr_Delay, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(cancel_rate))
+
+airline_summary
+ggplot(airline_summary, aes(x = Airline, y = cancel_rate)) +
+  geom_col() +
+  labs(
+    title = "Cancellation rate by airline",
+    x = "Airline",
+    y = "Cancellation rate"
+  ) +
+  theme_minimal()
+ggplot(airline_summary, aes(x = Airline, y = ontime_rate)) +
+  geom_col() +
+  labs(
+    title = "On-time arrival rate by airline",
+    x = "Airline",
+    y = "On-time rate"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+fit_ontime <- glm(
+  OnTime ~ Airline + Dep_Airport + Time_of_Day + Dist_Dep_Arr + Month,
+  data  = air_clean,
+  family = binomial()
+)
+summary(fit_ontime)
+```
+
+```{r}
+AirlineData_clean$Weather_Delay_Time <- as.numeric(as.character(AirlineData_clean$Weather_Delay_Time))
+AirlineData_clean$Weather_Delay_Time[is.na(AirlineData_clean$Weather_Delay_Time)] <- 0
+AirlineData_clean$Weather_Delay_Segment <- cut(
+  AirlineData_clean$Weather_Delay_Time,
+  breaks = c(-1, 0, 15, 60, Inf),
+  labels = c("NoDelay", "Minor", "Moderate", "Severe") 
+)
+AirlineData_clean$Carrier_Delay_Time <- as.numeric(as.character(AirlineData_clean$Carrier_Delay_Time))
+AirlineData_clean$Carrier_Delay_Time[is.na(AirlineData_clean$Carrier_Delay_Time)] <- 0
+AirlineData_clean$Carrier_Delay_Segment <- cut(
+  AirlineData_clean$Carrier_Delay_Time,
+  breaks = c(-1, 0, 15, 60, Inf),
+  labels = c("NoDelay", "Minor", "Moderate", "Severe") 
+)
+```
+
+```{r}
+fit_ontime_basis <- glm(
+  OnTime ~ Airline  + Time_of_Day + Distance_Category+ Month+Air_Time,
+  data  = AirlineData_clean ,
+  family = binomial()
+) #AUC 0.6219
+```
+
+```{r}
+fit_ontime_Pro <- glm(
+  OnTime ~ Airline + Time_of_Day + Distance_Category + Month+Air_Time + IsAirlineHub,
+  data  = AirlineData_clean ,
+  family = binomial()
+)
+summary(fit_ontime_Pro) #AUC0.74
+```
+
+```{R}
+#Anova:
+anova(fit_ontime_basis,fit_ontime_Pro)
+# 1. ComPute AUC
+pred_prob <- predict(fit_ontime_Pro, type = "response",newdata=AirlineData_clean)
+roc_obj <- roc(AirlineData_clean$OnTime, pred_prob)
+auc(roc_obj)
+```
+
+```{R}
+#VIF::
+cat("\nVIF analysis results:\n")
+vif_baseline <- vif(fit_ontime_basis)
+print(vif_baseline)
+
+vif_combined <- vif(fit_ontime_Pro)
+print(vif_combined)
+```
+
+```{r}
+Var_CA<- AirlineData_clean[AirlineData_clean$Dep_State == "CA", ]
+Var_CA$week_type <- ifelse(Var_CA$Week %in% c("Sat", "Sun"),
+                           "Weekend",
+                           "Weekday")
+route_rate <- AirlineData_clean %>%
+  group_by(Dep_Airport, Airline) %>%
+  summarise(route_ontime = mean(OnTime==1, na.rm=TRUE))
+
+Var_CA <- Var_CA %>%
+  left_join(route_rate, by=c("Dep_Airport","Airline"))
+model3_basis<- glm(OnTime ~ week_type+Dep_Airport + Airline +Time_of_Day,
+              data = Var_CA,
+              family = binomial) ##AUC 0.6247
+pred_prob <- predict(model3_basis, type = "response",newdata=Var_CA)
+roc_obj <- roc(Var_CA$OnTime, pred_prob)
+auc(roc_obj)
+summary(model3_basis)  
+
+model3 <- glm(OnTime ~ week_type+Dep_Airport + Airline +Time_of_Day+Air_Time+route_ontime+Airline*Dep_Airport,
+              data = Var_CA,
+              family = binomial)
+summary(model3)
+#Anova
+anova(model3_basis,model3)
+
+# 2. ComPute AUC
+pred_prob <- predict(model3, type = "response",newdata=Var_CA)
+roc_obj <- roc(Var_CA$OnTime, pred_prob)
+auc(roc_obj)          #AUC:0.7003
+```
+
+```{r}
+fit_cancel=glm(
+  Cancelled ~ Airline+ Month + Time_of_Day + Week+ Distance_Category + Dep_Airport,
+  data  = air_clean,
+  family = binomial()
+)
+summary(fit_cancel)
+# AUC
+p_hat_old <- predict(fit_cancel, type = "response")
+old_roc_obj <- roc(response = air_clean$Cancelled,
+               predictor = p_hat_old)
+auc(old_roc_obj)
+```
+
+```{r}
+
+#cancel_plus
+fit_cancel_p=glm(
+  Cancelled ~ Airline+ Dep_Airport+ Month +Time_of_Day+ Route_Cancel_Rate+ Week,
+  data  = air_clean,
+  family = binomial()
+)
+summary(fit_cancel_p)
+```
