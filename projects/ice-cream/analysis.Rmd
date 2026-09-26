@@ -1,0 +1,176 @@
+---
+title: "STAT 240 Final Project"
+output: html_document
+#date: "2024-11-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE, error = TRUE,
+                      fig.height = 3)
+library(tidyverse)
+
+```
+<br>
+<h2>Frequency of Broken McDonalds Ice Cream Machines</h2>
+<br>
+
+<h4>**Introduction**</h4>
+
+McDonald’s ice cream machines have become infamous for their frequent breakdowns, sparking countless jokes and even conspiracy theories online. Whether it’s a craving a McFlurry or a sundae, hearing “the ice cream machine is broken” has become an expectation rather than a surprise for many customers. We are interested in seeing whether our luck is any better in the dairy state: is the proportion of broken McDonald’s ice cream machines in Wisconsin lower than the proportion of broken machines in the rest of the United States? In this analysis, we aim to answer this question by comparing data on broken ice cream machines in Wisconsin to those outside the state. We will be using data on the status of a singular machine at a point in time along with the state it is located in to show that we have statistically significant evidence to suggest that the proportion of broken machines in Wisconsin is lower than those in all states outside of Wisconsin. 
+
+<br>
+<h4>**Background**</h4>
+
+We found the dataset on Kaggle. The dataset is uploaded and updated by contributor <i><a href=https://www.kaggle.com/thedevastator>thedevastator</a></i>. The data is based on complaints made over broken ice cream machines in specific locations. 
+
+The data is scraped from a different website: <a href = https://mcbroken.com/>McBroken</a>. McBroken is a website created by github user <i><a href=https://github.com/rashiq>rashiq</a></i>. There is no official information on how rashiq gets this data but copies of McBroken such as the <a href=https://github.com/paulbtw/mcbrokenio>version</a> by github user <i><a href=https://github.com/paulbtw>paulbtw</a></i> have used McDonalds' API to access complaints every half hour. As the data is based on complaints, there might be bias surrounding areas with extremely high or low report rates, directly affecting the outcome of our graphs and other calculations. 
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+mcdonalds = read_csv("../data/mcdonalds_dataset.csv")
+
+cleandata = mcdonalds %>% select(is_broken, is_active, state, country) %>%
+  filter(country == "USA") %>%
+    filter(is_active = TRUE) %>%
+      select(-is_active, -country)
+```
+
+
+The variables we are planning to use in the dataset are: <br>
+
+**is_broken**: This is a boolean variable stating whether or not a machine is broken. It is required for finding the proportion of broken ice cream machines in Wisconsin and all the states excluding Wisconsin.<br>
+**state**: This is a string displaying the state in which machine is located. This variable can also be used to see the number of machines and the number of broken machines in Wisconsin and in all other states excluding Wisconsin through viewing multiple rows that each hold the same "state" value. <br>
+
+A single row of the dataset represents the status of one specific machine in a specfic point in time. Each row contains the data for the geographical location, as well as the operative status of that location's ice cream machine at the provided point in time. The dataset contained machines from other countries apart from the USA as well as a few inactive machines (neither active or broken) which we filtered out of the dataset for convenience. 
+
+The new dataset has three columns: one for indexes, is_broken and state. 
+
+<br>
+<h4>**Quick Look**</h4>
+
+By creating a bar graph that shows the proportion of broken machines in Wisconsin v the proportion of broken machines in the other states, on first glance it seems that the proportion outside Wisconsin is much higher.
+
+<br>
+<u>Proportion of Broken Ice Cream machines in Wisconsin v The Other 49 states</u>
+<br>
+<i>Extracted on November, 24, 2024 at 19:37</i>
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+WI = cleandata %>% 
+  filter(state == "WI")
+
+NotWI = cleandata %>% 
+  filter(state != "WI")
+
+WI_iceCream = WI %>%
+  summarize(
+    broken = sum(is_broken),
+    total = n(),
+    proportion = broken / total
+  )
+
+NotWI_iceCream = NotWI %>% 
+  summarize(
+    broken = sum(is_broken),
+    total = n(),
+    proportion = broken / total
+  ) 
+
+Ice_Cream = tibble(
+  Group = c("WI", "Other States"),
+  proportion = c(WI_iceCream$proportion, NotWI_iceCream$proportion)
+)
+
+ggplot(Ice_Cream, aes(x = Group, y = proportion)) +
+  geom_col()+
+  labs(
+    x = "WI and Other States",
+    y = "Proportion of Broken Machines"
+  ) +
+  theme_bw()
+```
+
+<i>Figure 1:</i> Bar Chart of Proportions of Broken Machines in dataset
+
+<br>
+<h4>**Statistical Analysis**</h4>
+
+<br>
+**Model**
+
+Our data meets the BINS assumption because it has binary outcome, which is broken or active. Each machine is collected independently and the status of one machine does not impact the other machine. The number of trials are fixed and each machines has equal probability of getting broken or active. To test if there are less broken machines in Wisconsin comparing to other 49 states, we used inference on difference in two proportions method. 
+
+Let $X_w$ represent the observed number of broken McDonald's ice cream machines in Wisconsin.
+
+Let $X_n$ represent the observed number of broken McDonald's ice cream machines in US states other than Wisconsin.
+
+$p_w$ is the true probability that any given McDonald's ice cream machine in Wisconsin is broken.
+
+$p_n$ is the true probability that any given McDonald's ice cream machine in US states other than Wisconsin is broken.
+
+$X_w \sim binomial(271, p_w)$
+
+$X_n \sim binomial(12444, p_n)$
+
+<br>
+**Hypotheses**
+
+We will conduct a hypothesis test on the following hypotheses:
+
+$H_0: p_w = p_n$
+
+$H_a: p_w < p_n$
+
+Using a one-sided difference of proportions and $\alpha = .05$
+
+<br>
+**Interpretation**
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+x1 = 17
+x2 = 1329
+n1 = 271
+n2 = 12444
+pbar = (x1+x2)/(n1+n2)
+
+numerator = (x1/n1) - (x2/n2)
+denominator = sqrt((pbar*(1-pbar)/n1) + (pbar*(1-pbar)/n2))
+test_stat = numerator/denominator
+pvalue = pnorm(test_stat, 0, 1)
+```
+The p-value is .00983, which is much lower than our alpha level of .05, so we have statistically significant evidence to reject the null hypothesis. Therefore, we have evidence to suggest that the proportion of broken McDonald's ice cream machines in Wisconsin is lower than the proportion of broken McDonald's ice cream machines in the other 49 US states.
+
+<br>
+<h4>**Discussion**</h4>
+
+
+<br>
+**Further Interpretation**
+
+The statistical analysis shows that the proportion of broken McDonald's ice cream machines in Wisconsin is significantly lower than that of those in other U.S. states. With a p-value of 0.00983, we reject the null hypothesis at the 0.05 alpha level, suggesting there is strong evidence that Wisconsin McDonald's ice cream machines are less likely to be broken than that of the machines in all other states. This could all be due to at least two reasons. Either Wisconsin's ice cream machine's truly do work at a higher proportion than the rest of the US, or fewer customer complains are made about broken machines in the state.
+
+This interpretation however, is only based on a single capture in time, so there could very well be other factors at play here, such as maintenance schedules, customer complain frequency, and countless others than slightly effect results, resulting in the lower proportion of broken machines that we see.
+
+<br>
+**Limitations and Future Scope**
+
+This data is from one snapshot in time. Our numbers do not take into account how the behavior of ice cream machines may change based on time of day, month, or year.
+
+Geographical bias. Every state has different population densities, customer behaviors and machine usage rate in some period of time for each McDonald's in that state, which may effect the status of the ice cream machine.
+
+Source of data. This dataset also relies on reported customer complaints, so it may not be 100% accurate to the true status of that ice cream machine.
+
+We don't know exactly why the Wisconsin ice cream machines are functional more often. Further research is needed into this incredibly pressing matter, which has implications for the entire human race.
+
+Outliers: A specific area that has really high or low customer complaints or a machine that is always broken or working could skew the data therefore unrealistically representing the rest of the dataset. 
+
+<br>
+**Conclusion**
+
+We believe that the dairy state, Wisconsin, may have a lower proportion of broken McDonald's ice cream machines than that of other states in the US. We performed a one-sided hypothesis test, comparing the proportion of broken McDonald's ice cream machine's to all other US states, in which we found a p-value of 0.00983, which is lower than the alpha level of 0.05. This suggests that Wisconsin's machines work at a statistically significantly higher rate proportionally to other states. This doesn't necessarily mean Wisconsin machines are inherently better, though it does prove that a difference between them must exist, creating this disparity in proportions. Whether this difference truly is because Wisconsin is the dairy state is not known, though there are a handful of factors that would require a deeper statistical analysis in order to understand why this proportion disparity exists.
+
+<br>
+<h4>**Reference**</h4>
+1) TheDevastator. "McDonalds Ice Cream Machines Breaking - Timeseries.", Kaggle, 2022, https://www.kaggle.com/datasets/thedevastator/mcdonalds-ice-cream-machines-broken-timeseries.
+2) Rashiq. "McBroken." McBroken, https://mcbroken.com.
+
+3) Rashiq. McBroken Archive. GitHub, 2021, https://github.com/rashiq/mcbroken-archive.
