@@ -1,0 +1,253 @@
+```{r}
+# Run these once if needed:
+# install.packages(c("glmnet", "pROC"))
+```
+
+```{r}
+library(glmnet)
+library(pROC)
+
+# -----------------------------
+# 1) Read data
+# -----------------------------
+set.seed(42)
+
+df <- read.csv("/Users/siyingliu/Desktop/Heart_disease_statlog.csv")
+
+# -----------------------------
+# 2) Define variable types
+# -----------------------------
+numeric_vars <- c("age", "trestbps", "chol", "thalach", "oldpeak")
+categorical_vars <- c("sex", "cp", "fbs", "restecg", "exang", "slope", "ca", "thal")
+
+for (v in categorical_vars) {
+  df[[v]] <- as.factor(df[[v]])
+}
+
+for (v in numeric_vars) {
+  if (any(is.na(df[[v]]))) {
+    df[[v]][is.na(df[[v]])] <- median(df[[v]], na.rm = TRUE)
+  }
+}
+for (v in categorical_vars) {
+  if (any(is.na(df[[v]]))) {
+    mode_val <- names(sort(table(df[[v]]), decreasing = TRUE))[1]
+    df[[v]][is.na(df[[v]])] <- mode_val
+  }
+}
+```
+
+```{r}
+# -----------------------------
+# 3) Train/test split
+# -----------------------------
+n <- nrow(df)
+train_idx <- sample(seq_len(n), size = floor(0.8 * n))
+train_df <- df[train_idx, ]
+test_df  <- df[-train_idx, ]
+```
+
+```{r}
+# -----------------------------
+# 4) Build design matrices
+# -----------------------------
+x_train_raw <- model.matrix(target ~ ., data = train_df)[, -1]
+x_test_raw  <- model.matrix(target ~ ., data = test_df)[, -1]
+y_train <- train_df$target
+y_test  <- test_df$target
+```
+
+```{r}
+# Standardize using training set only
+train_means <- apply(x_train_raw, 2, mean)
+train_sds <- apply(x_train_raw, 2, sd)
+train_sds[train_sds == 0] <- 1
+
+x_train <- scale(x_train_raw, center = train_means, scale = train_sds)
+x_test  <- scale(x_test_raw,  center = train_means, scale = train_sds)
+
+# Helper: convert transformed names back to original feature names
+get_original_feature <- function(name_vec) {
+  sapply(name_vec, function(x) strsplit(x, "")[[1]][1], USE.NAMES = FALSE)
+}
+```
+
+```{r}
+
+# Better mapping using prefix matching
+orig_names <- c(numeric_vars, categorical_vars)
+map_to_original <- function(feature_names, originals) {
+  mapped <- sapply(feature_names, function(f) {
+    hit <- originals[sapply(originals, function(o) startsWith(f, o))]
+    if (length(hit) == 0) return(f)
+    hit[which.max(nchar(hit))]
+  })
+  unique(mapped)
+}
+
+# Helper: fit logistic regression and return test accuracy/AUC
+fit_eval_logistic <- function(xtr, ytr, xte, yte) {
+  dat_tr <- data.frame(y = ytr, xtr)
+  dat_te <- data.frame(xte)
+
+  model <- glm(y ~ ., data = dat_tr, family = binomial())
+  probs <- predict(model, newdata = dat_te, type = "response")
+  preds <- ifelse(probs >= 0.5, 1, 0)
+  acc <- mean(preds == yte)
+  auc <- as.numeric(auc(yte, probs))
+  list(model = model, accuracy = acc, auc = auc, probs = probs)
+}
+```
+
+```{r}
+# ============================================================
+# METHOD 1: FILTER METHOD
+# Correlation screening with p-values
+# ============================================================
+cat("\n================ FILTER METHOD: CORRELATION SCREENING ================\n")
+
+# Compute absolute correlation and p-value for each transformed column
+cor_results <- lapply(colnames(x_train), function(name) {
+  test <- cor.test(x_train[, name], y_train)
+  data.frame(
+    feature = name,
+    correlation = unname(test$estimate),
+    abs_correlation = abs(unname(test$estimate)),
+    p_value = test$p.value
+  )
+})
+
+cor_results <- do.call(rbind, cor_results)
+
+# Sort by absolute correlation
+cor_results <- cor_results[order(-cor_results$abs_correlation), ]
+
+# Keep top 20 transformed features
+k_filter <- 20
+top_filter_results <- cor_results[1:k_filter, ]
+top_filter_features <- top_filter_results$feature
+filter_original <- map_to_original(top_filter_features, orig_names)
+
+cat("Top transformed features by absolute correlation:\n")
+print(top_filter_results)
+
+cat("\nSelected original features:\n")
+print(filter_original)
+
+filter_eval <- fit_eval_logistic(
+  x_train[, top_filter_features, drop = FALSE], y_train,
+  x_test[, top_filter_features, drop = FALSE], y_test
+)
+
+selected_features_p05 <- top_filter_results$feature[top_filter_results$p_value < 0.05]
+
+filter_eval_p05 <- fit_eval_logistic(
+  x_train[, selected_features_p05, drop = FALSE], y_train,
+  x_test[, selected_features_p05, drop = FALSE], y_test
+)
+
+cat("Selected features:\n")
+print(selected_features_p05)
+cat(sprintf("Test accuracy: %.4f\n", filter_eval_p05$accuracy))
+cat(sprintf("Test AUC: %.4f\n", filter_eval_p05$auc))
+selected_original_p05 <- map_to_original(selected_features_p05, orig_names)
+print(selected_original_p05)
+```
+
+```{r}
+# ============================================================
+# METHOD 2: EMBEDDED METHOD
+# Logistic Lasso
+# ============================================================
+cat("\n================ EMBEDDED METHOD: LOGISTIC LASSO ================\n")
+
+cv_lasso <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 1,
+  nfolds = 5,
+  type.measure = "class"
+)
+
+best_lambda <- cv_lasso$lambda.min
+cat(sprintf("Chosen lambda (1se rule): %.6f\n", best_lambda))
+
+lasso_fit <- glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 1,
+  lambda = best_lambda
+)
+
+coef_mat <- coef(lasso_fit)
+selected_lasso_transformed <- rownames(coef_mat)[which(coef_mat[, 1] != 0)]
+selected_lasso_transformed <- setdiff(selected_lasso_transformed, "(Intercept)")
+selected_lasso_original <- map_to_original(selected_lasso_transformed, orig_names)
+
+cat("Selected transformed features:\n")
+print(selected_lasso_transformed)
+cat("\nSelected original features:\n")
+print(selected_lasso_original)
+
+lasso_probs <- as.numeric(predict(lasso_fit, newx = x_test, type = "response"))
+lasso_preds <- ifelse(lasso_probs >= 0.5, 1, 0)
+lasso_acc <- mean(lasso_preds == y_test)
+lasso_auc <- as.numeric(auc(y_test, lasso_probs))
+
+cat(sprintf("Lasso test accuracy: %.4f\n", lasso_acc))
+cat(sprintf("Lasso test AUC: %.4f\n", lasso_auc))
+coef_mat
+```
+
+```{r}
+# ============================================================
+# METHOD 3: WRAPPER METHOD
+# LOCO (Leave-One-Covariate-Out)
+# ============================================================
+cat("\n================ WRAPPER METHOD: LOCO ================\n")
+
+# Full model
+full_eval <- fit_eval_logistic(x_train, y_train, x_test, y_test)
+full_auc <- full_eval$auc
+full_acc <- full_eval$accuracy
+
+cat(sprintf("Full model test accuracy: %.4f\n", full_acc))
+cat(sprintf("Full model test AUC: %.4f\n", full_auc))
+
+loco_results <- data.frame(
+  feature = orig_names,
+  auc_without = NA_real_,
+  auc_drop = NA_real_,
+  acc_without = NA_real_,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_along(orig_names)) {
+  feat <- orig_names[i]
+  keep_cols <- colnames(x_train)[!startsWith(colnames(x_train), feat)]
+
+  eval_i <- fit_eval_logistic(
+    x_train[, keep_cols, drop = FALSE], y_train,
+    x_test[, keep_cols, drop = FALSE], y_test
+  )
+
+  loco_results$auc_without[i] <- eval_i$auc
+  loco_results$auc_drop[i] <- full_auc - eval_i$auc
+  loco_results$acc_without[i] <- eval_i$accuracy
+}
+
+loco_results <- loco_results[order(-loco_results$auc_drop), ]
+rownames(loco_results) <- NULL
+
+# round only numeric columns
+loco_results_rounded <- loco_results
+num_cols <- sapply(loco_results_rounded, is.numeric)
+loco_results_rounded[num_cols] <- round(loco_results_rounded[num_cols], 4)
+
+cat("LOCO ranking (larger AUC drop = more important):\n")
+print(loco_results_rounded)
+selected_loco <- loco_results$feature[loco_results$auc_drop > 0]
+print(selected_loco)
+```
