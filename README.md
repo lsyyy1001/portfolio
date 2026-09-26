@@ -1,4 +1,4 @@
-# Siying Liu — Data Portfolio
+# Siying Liu — Project Portfolio
 
 A static, GitHub Pages–ready version of Siying Liu’s data analytics portfolio.
 
